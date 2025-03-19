@@ -2,13 +2,15 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import * as tf from '@tensorflow/tfjs';
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
+import './App.css';
 
 function App() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const captureCanvasRef = useRef(null);
   const [model, setModel] = useState(null);
   const [error, setError] = useState(null);
-  const [isLiveMode, setIsLiveMode] = useState(true);
+  const [mode, setMode] = useState('detect'); // 'detect', 'capture', 'train'
   const [detections, setDetections] = useState([]);
   const animationRef = useRef(null);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
@@ -21,16 +23,50 @@ function App() {
   const [customClasses, setCustomClasses] = useState([]);
   const [newClassName, setNewClassName] = useState('');
   const [trainingImages, setTrainingImages] = useState({});
+  const [currentTrainingClass, setCurrentTrainingClass] = useState(null);
+  const [confidenceThreshold, setConfidenceThreshold] = useState(0.3); // Lower default threshold for better detection
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
+  const [customModel, setCustomModel] = useState(null);
+  const [isTraining, setIsTraining] = useState(false);
+  const [trainingProgress, setTrainingProgress] = useState(0);
+  const [trainingLogs, setTrainingLogs] = useState([]);
+  const [detectionHistory, setDetectionHistory] = useState([]);
+  const [modelLoading, setModelLoading] = useState(true);
 
+  // Load the pre-trained COCO-SSD model with better error handling
   const loadModel = useCallback(async () => {
     try {
-      const loadedModel = await cocoSsd.load({base: 'mobilenet_v2'});
+      setModelLoading(true);
+      setTrainingLogs(prev => [...prev, "Loading COCO-SSD model..."]);
+      
+      // Force TensorFlow.js to use WebGL backend for better performance
+      await tf.setBackend('webgl');
+      
+      // Load the model with a more optimized configuration
+      const loadedModel = await cocoSsd.load({
+        base: 'mobilenet_v2',
+        modelUrl: undefined, // Let it use the default URL
+      });
+      
       setModel(loadedModel);
+      setModelLoading(false);
+      setTrainingLogs(prev => [...prev, "COCO-SSD model loaded successfully!"]);
+      
+      // Initialize detection after model is loaded
+      if (mode === 'detect') {
+        setTimeout(() => {
+          if (videoRef.current && isVideoPlaying) {
+            detectObjects();
+          }
+        }, 1000); // Small delay to ensure everything is ready
+      }
     } catch (err) {
       console.error("Error loading the model", err);
+      setTrainingLogs(prev => [...prev, `Error loading model: ${err.message}`]);
       setError("Failed to load the AI model. Please try refreshing the page.");
+      setModelLoading(false);
     }
-  }, []);
+  }, [mode, isVideoPlaying]); // Added dependencies to trigger re-detection
 
   useEffect(() => {
     loadModel();
@@ -41,93 +77,229 @@ function App() {
     };
   }, [loadModel]);
 
+  // Set up camera access with improved error handling and resolution
   const setupCamera = useCallback(() => {
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      // Try to get higher resolution for better detection
       const constraints = { 
         video: { 
           facingMode: 'environment',
           width: { ideal: 1280 },
-          height: { ideal: 720 }
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 } // Specify frame rate for smoother video
         } 
       };
+      
       navigator.mediaDevices.getUserMedia(constraints)
         .then((stream) => {
           let video = videoRef.current;
-          video.srcObject = stream;
-          video.addEventListener('loadedmetadata', () => {
-            video.play().then(() => setIsVideoPlaying(true)).catch(e => {
-              console.error("Error playing the video:", e);
-              setError("Failed to start the video stream. Please ensure you've granted camera permissions and try again.");
+          if (video) {
+            video.srcObject = stream;
+            
+            // Use loadeddata instead of loadedmetadata for more reliable video loading
+            video.addEventListener('loadeddata', () => {
+              video.play()
+                .then(() => {
+                  setIsVideoPlaying(true);
+                  console.log("Video playing successfully");
+                  
+                  // Properly size the canvas to match the video
+                  if (canvasRef.current && video.videoWidth) {
+                    canvasRef.current.width = video.videoWidth;
+                    canvasRef.current.height = video.videoHeight;
+                    console.log(`Canvas sized to: ${video.videoWidth}x${video.videoHeight}`);
+                  }
+                  
+                  // Start detection if model is already loaded
+                  if (model && mode === 'detect') {
+                    detectObjects();
+                  }
+                })
+                .catch(e => {
+                  console.error("Error playing the video:", e);
+                  setError("Failed to start the video stream. Please ensure you've granted camera permissions and try again.");
+                });
             });
-          });
+          }
         })
         .catch((err) => {
           console.error("Error accessing the camera", err);
           setError("Failed to access the camera. Please ensure you've granted camera permissions and try again.");
+          
+          // Fallback to lower resolution if the initial request fails
+          const fallbackConstraints = { 
+            video: { 
+              facingMode: 'environment',
+              width: { ideal: 640 },
+              height: { ideal: 480 }
+            } 
+          };
+          
+          navigator.mediaDevices.getUserMedia(fallbackConstraints)
+            .then((fallbackStream) => {
+              let video = videoRef.current;
+              if (video) {
+                video.srcObject = fallbackStream;
+                video.addEventListener('loadeddata', () => {
+                  video.play()
+                    .then(() => {
+                      setIsVideoPlaying(true);
+                      console.log("Video playing with fallback resolution");
+                      
+                      if (canvasRef.current && video.videoWidth) {
+                        canvasRef.current.width = video.videoWidth;
+                        canvasRef.current.height = video.videoHeight;
+                      }
+                      
+                      if (model && mode === 'detect') {
+                        detectObjects();
+                      }
+                    })
+                    .catch(e => {
+                      console.error("Error playing the video with fallback:", e);
+                      setError("Failed to start the video stream even with fallback settings.");
+                    });
+                });
+              }
+            })
+            .catch(fallbackErr => {
+              console.error("Error accessing the camera with fallback settings:", fallbackErr);
+              setError("Failed to access the camera. Please try a different browser or device.");
+            });
         });
+    } else {
+      setError("Your browser doesn't support camera access. Please try a different browser.");
     }
-  }, []);
+  }, [model, mode]);
 
   useEffect(() => {
     setupCamera();
   }, [setupCamera]);
 
+  // Main object detection function using COCO-SSD - improved for reliability
   const detectObjects = useCallback(async (imageSource = null) => {
-    if (model && (videoRef.current || imageSource) && canvasRef.current) {
+    if (!model) {
+      console.log("Model not loaded yet, skipping detection");
+      return;
+    }
+    
+    if ((!videoRef.current && !imageSource) || !canvasRef.current) {
+      console.log("Video or canvas not ready, skipping detection");
+      return;
+    }
+    
+    try {
       const canvas = canvasRef.current;
       const ctx = canvas.getContext('2d');
 
       let source = imageSource || videoRef.current;
-      canvas.width = source.videoWidth || source.width;
-      canvas.height = source.videoHeight || source.height;
+      
+      // Check if source dimensions are valid
+      const sourceWidth = source.videoWidth || source.width;
+      const sourceHeight = source.videoHeight || source.height;
+      
+      if (!sourceWidth || !sourceHeight) {
+        console.log("Source dimensions not ready yet, retrying detection in 500ms");
+        setTimeout(() => detectObjects(), 500);
+        return;
+      }
+      
+      // Ensure canvas is properly sized
+      if (canvas.width !== sourceWidth || canvas.height !== sourceHeight) {
+        canvas.width = sourceWidth;
+        canvas.height = sourceHeight;
+        console.log(`Canvas resized to: ${sourceWidth}x${sourceHeight}`);
+      }
 
+      // Draw the current frame
       ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
 
-      const predictions = await model.detect(canvas);
+      // Detect with COCO-SSD
+      console.log("Running detection...");
+      const predictions = await model.detect(canvas, { scoreThreshold: confidenceThreshold });
+      console.log("Detection results:", predictions);
 
-      ctx.font = '16px Arial';
-      ctx.lineWidth = 2;
+      // Clear previous drawings
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+
+      // Set up text drawing parameters
+      ctx.font = 'bold 16px Arial';
+      ctx.lineWidth = 3;
+      ctx.lineJoin = 'round';
 
       const newObjectCounts = {};
       predictions.forEach((prediction, index) => {
         const [x, y, width, height] = prediction.bbox;
-        const color = `hsl(${(index * 137) % 360}, 70%, 50%)`;
+        const color = getColorForClass(prediction.class);
+        
+        // Draw box with thicker border
         ctx.strokeStyle = color;
         ctx.fillStyle = color;
-
         ctx.strokeRect(x, y, width, height);
+        
+        // Draw label with background for better visibility
+        const textWidth = ctx.measureText(`${prediction.class} (${Math.round(prediction.score * 100)}%)`).width;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y > 25 ? y - 25 : 0, textWidth + 10, 25);
+        ctx.fillStyle = '#FFFFFF';
         ctx.fillText(
           `${prediction.class} (${Math.round(prediction.score * 100)}%)`,
-          x, y > 20 ? y - 5 : 20
+          x + 5, y > 20 ? y - 8 : 17
         );
 
         newObjectCounts[prediction.class] = (newObjectCounts[prediction.class] || 0) + 1;
       });
 
-      // Add custom class detections
-      for (let className of customClasses) {
-        if (trainingImages[className] && trainingImages[className].length > 0) {
-          const customDetection = await detectCustomClass(canvas, className);
-          if (customDetection) {
-            predictions.push(customDetection);
-            newObjectCounts[className] = (newObjectCounts[className] || 0) + 1;
-
-            const [x, y, width, height] = customDetection.bbox;
-            ctx.strokeStyle = 'yellow';
-            ctx.fillStyle = 'yellow';
+      // Run custom model detection if available
+      if (customModel) {
+        try {
+          const customDetections = await detectWithCustomModel(canvas);
+          customDetections.forEach((detection, index) => {
+            const [x, y, width, height] = detection.bbox;
+            ctx.strokeStyle = '#FFFF00';
+            ctx.fillStyle = '#FFFF00';
             ctx.strokeRect(x, y, width, height);
+            
+            // Draw label with background
+            const textWidth = ctx.measureText(`${detection.class} (${Math.round(detection.score * 100)}%)`).width;
+            ctx.fillRect(x, y > 25 ? y - 25 : 0, textWidth + 10, 25);
+            ctx.fillStyle = '#000000';
             ctx.fillText(
-              `${className} (${Math.round(customDetection.score * 100)}%)`,
-              x, y > 20 ? y - 5 : 20
+              `${detection.class} (${Math.round(detection.score * 100)}%)`,
+              x + 5, y > 20 ? y - 8 : 17
             );
-          }
+
+            newObjectCounts[detection.class] = (newObjectCounts[detection.class] || 0) + 1;
+            predictions.push(detection);
+          });
+        } catch (err) {
+          console.error("Error running custom model:", err);
         }
       }
 
       setObjectCounts(newObjectCounts);
       setDetections(predictions);
+      
+      // Track detection history for analysis
+      if (predictions.length > 0) {
+        setDetectionHistory(prev => {
+          const newHistory = [
+            ...prev, 
+            {
+              timestamp: new Date().toISOString(),
+              detections: predictions.map(p => ({ 
+                class: p.class, 
+                confidence: p.score 
+              }))
+            }
+          ];
+          return newHistory.slice(-100); // Keep last 100 records
+        });
+      }
 
-      if (isLiveMode) {
+      // Calculate FPS
+      if (mode === 'detect') {
         const now = Date.now();
         const elapsed = now - lastDetectionTime.current;
         frameCount.current++;
@@ -137,117 +309,163 @@ function App() {
           lastDetectionTime.current = now;
         }
 
+        // Continue the detection loop
         animationRef.current = requestAnimationFrame(() => detectObjects());
       }
-    }
-  }, [model, isLiveMode, customClasses, trainingImages]);
-
-  const detectCustomClass = async (image, className) => {
-    const examples = trainingImages[className];
-    if (!examples || examples.length === 0) return null;
-
-    let maxSimilarity = -Infinity;
-    let bestMatch = null;
-
-    for (let example of examples) {
-      const similarity = await compareImages(image, example);
-      if (similarity > maxSimilarity) {
-        maxSimilarity = similarity;
-        bestMatch = example;
+    } catch (err) {
+      console.error("Error during detection:", err);
+      
+      // Try to recover from transient errors
+      if (mode === 'detect') {
+        setTimeout(() => {
+          console.log("Attempting to recover from detection error...");
+          animationRef.current = requestAnimationFrame(() => detectObjects());
+        }, 1000);
       }
     }
+  }, [model, mode, confidenceThreshold, customModel]);
 
-    if (maxSimilarity > 0.7) { // Adjust this threshold as needed
-      return {
-        class: className,
-        score: maxSimilarity,
-        bbox: [0, 0, image.width, image.height] // Full image bounding box
-      };
-    }
+  // Detect with custom trained model
+  const detectWithCustomModel = async (imageData) => {
+    if (!customModel) return [];
 
-    return null;
-  };
-
-  const compareImages = async (img1, img2) => {
-    const tensor1 = tf.browser.fromPixels(img1);
-    const tensor2 = tf.browser.fromPixels(img2);
-
-    const resized1 = tf.image.resizeBilinear(tensor1, [224, 224]);
-    const resized2 = tf.image.resizeBilinear(tensor2, [224, 224]);
-
-    const normalized1 = resized1.div(255);
-    const normalized2 = resized2.div(255);
-
-    const similarity = tf.metrics.cosineProximity(normalized1.flatten(), normalized2.flatten()).dataSync()[0];
-
-    tensor1.dispose();
-    tensor2.dispose();
-    resized1.dispose();
-    resized2.dispose();
-    normalized1.dispose();
-    normalized2.dispose();
-
-    return similarity;
-  };
-
-  useEffect(() => {
-    if (isLiveMode && model && isVideoPlaying) {
-      detectObjects();
-    } else if (animationRef.current) {
-      cancelAnimationFrame(animationRef.current);
-    }
-    
-    return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
+    try {
+      // Convert image to tensor
+      const tensor = tf.browser.fromPixels(imageData);
+      const normalized = tensor.div(255.0).expandDims(0);
+      
+      // Run prediction
+      const predictions = await customModel.predict(normalized);
+      
+      // Process predictions into detection format
+      const classes = Object.keys(trainingImages);
+      const scores = predictions.dataSync();
+      const detections = [];
+      
+      for (let i = 0; i < classes.length; i++) {
+        if (scores[i] > confidenceThreshold) {
+          detections.push({
+            class: classes[i],
+            score: scores[i],
+            bbox: [0, 0, imageData.width, imageData.height] // Default to full image
+          });
+        }
       }
+      
+      // Cleanup tensors
+      tensor.dispose();
+      normalized.dispose();
+      predictions.dispose();
+      
+      return detections;
+    } catch (err) {
+      console.error("Error in custom detection:", err);
+      return [];
+    }
+  };
+
+  // Get consistent color for object classes
+  const getColorForClass = (className) => {
+    const colorMap = {
+      person: '#FF0000',
+      car: '#00FF00',
+      dog: '#0000FF',
+      cat: '#FFFF00',
+      bicycle: '#FF00FF',
+      chair: '#00FFFF',
+      laptop: '#FFA500',
+      'cell phone': '#800080',
+      book: '#008000',
+      tv: '#FFC0CB',
     };
-  }, [isLiveMode, model, detectObjects, isVideoPlaying]);
 
-  const handleModeChange = () => {
+    if (colorMap[className]) {
+      return colorMap[className];
+    }
+
+    // Generate color for unknown classes
+    let hash = 0;
+    for (let i = 0; i < className.length; i++) {
+      hash = className.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const color = '#' + ('000000' + (hash & 0xFFFFFF).toString(16)).slice(-6);
+    return color;
+  };
+
+  // Handler for changing mode (detect/capture/train)
+  const handleModeChange = (newMode) => {
     if (animationRef.current) {
       cancelAnimationFrame(animationRef.current);
     }
-    setIsLiveMode(!isLiveMode);
-    if (isLiveMode) {
+    
+    setMode(newMode);
+    
+    if (newMode === 'detect' && model && isVideoPlaying) {
+      // Reset stats before starting detection
       setDetections([]);
       setObjectCounts({});
-      setCapturedImage(null);
+      
+      // Start detection with a slight delay to ensure UI has updated
+      setTimeout(() => {
+        detectObjects();
+      }, 100);
     } else {
-      detectObjects();
+      setDetections([]);
+      setObjectCounts({});
     }
   };
 
-  const handleDetectAndSave = () => {
-    if (!isLiveMode && videoRef.current) {
+  // Handle image capture for training
+  const handleCaptureImage = () => {
+    if (videoRef.current && captureCanvasRef.current && currentTrainingClass) {
       const video = videoRef.current;
-      const canvas = document.createElement('canvas');
+      const canvas = captureCanvasRef.current;
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
-      canvas.getContext('2d').drawImage(video, 0, 0);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0);
+      
       const imageDataUrl = canvas.toDataURL('image/jpeg');
       setCapturedImage(imageDataUrl);
-
+      
       const img = new Image();
-      img.onload = () => detectObjects(img);
+      img.onload = () => {
+        // Add to training images
+        setTrainingImages(prev => ({
+          ...prev,
+          [currentTrainingClass]: [...(prev[currentTrainingClass] || []), img]
+        }));
+        
+        setTrainingLogs(prev => [
+          ...prev, 
+          `Captured image for class "${currentTrainingClass}". Total: ${
+            (trainingImages[currentTrainingClass]?.length || 0) + 1
+          }`
+        ]);
+      };
       img.src = imageDataUrl;
+    } else {
+      alert("Please select a class to train first");
     }
   };
 
-  const handleObjectSelect = (objectClass) => {
-    setSelectedObject(objectClass);
-  };
-
+  // Add new custom class
   const handleAddClass = () => {
     if (newClassName && !customClasses.includes(newClassName)) {
       setCustomClasses([...customClasses, newClassName]);
+      setTrainingLogs(prev => [...prev, `Added new class: ${newClassName}`]);
       setNewClassName('');
     }
   };
 
+  // Handle image upload from file for training
   const handleImageUpload = (e, className) => {
-    const file = e.target.files[0];
-    if (file) {
+    const files = e.target.files;
+    if (files.length === 0) return;
+    
+    setTrainingLogs(prev => [...prev, `Processing ${files.length} image(s) for class "${className}"...`]);
+    
+    Array.from(files).forEach(file => {
       const reader = new FileReader();
       reader.onload = (event) => {
         const img = new Image();
@@ -260,8 +478,187 @@ function App() {
         img.src = event.target.result;
       };
       reader.readAsDataURL(file);
+    });
+    
+    setTrainingLogs(prev => [...prev, `Images for class "${className}" processed and added to training set`]);
+  };
+
+  // Set class for capturing training images
+  const handleSetTrainingClass = (className) => {
+    setCurrentTrainingClass(className);
+    setTrainingLogs(prev => [...prev, `Selected "${className}" for training capture`]);
+  };
+
+  // Train custom model on captured images
+  const trainCustomModel = async () => {
+    try {
+      setIsTraining(true);
+      setTrainingProgress(0);
+      setTrainingLogs(prev => [...prev, "Starting model training..."]);
+      
+      // Check if we have enough training data
+      const classes = Object.keys(trainingImages);
+      if (classes.length < 2) {
+        throw new Error("Need at least 2 classes for training");
+      }
+      
+      for (const className of classes) {
+        if (!trainingImages[className] || trainingImages[className].length < 5) {
+          throw new Error(`Need at least 5 images for class "${className}"`);
+        }
+      }
+      
+      // Create model architecture
+      const model = tf.sequential();
+      model.add(tf.layers.conv2d({
+        inputShape: [224, 224, 3],
+        filters: 16,
+        kernelSize: 3,
+        activation: 'relu'
+      }));
+      model.add(tf.layers.maxPooling2d({ poolSize: 2 }));
+      model.add(tf.layers.conv2d({
+        filters: 32,
+        kernelSize: 3,
+        activation: 'relu'
+      }));
+      model.add(tf.layers.maxPooling2d({ poolSize: 2 }));
+      model.add(tf.layers.conv2d({
+        filters: 64,
+        kernelSize: 3,
+        activation: 'relu'
+      }));
+      model.add(tf.layers.maxPooling2d({ poolSize: 2 }));
+      model.add(tf.layers.flatten());
+      model.add(tf.layers.dense({ units: 128, activation: 'relu' }));
+      model.add(tf.layers.dense({ units: classes.length, activation: 'softmax' }));
+      
+      // Compile model
+      model.compile({
+        optimizer: 'adam',
+        loss: 'categoricalCrossentropy',
+        metrics: ['accuracy']
+      });
+      
+      // Prepare training data
+      setTrainingLogs(prev => [...prev, "Processing training data..."]);
+      const xs = [];
+      const ys = [];
+      
+      for (let i = 0; i < classes.length; i++) {
+        const className = classes[i];
+        const images = trainingImages[className] || [];
+        
+        for (const img of images) {
+          try {
+            // Process image
+            const tensor = tf.browser.fromPixels(img);
+            const resized = tf.image.resizeBilinear(tensor, [224, 224]);
+            const normalized = resized.div(255.0);
+            xs.push(normalized);
+            
+            // Create one-hot label
+            const label = new Array(classes.length).fill(0);
+            label[i] = 1;
+            ys.push(label);
+            
+            tensor.dispose();
+            resized.dispose();
+          } catch (err) {
+            console.error("Error processing image:", err);
+          }
+        }
+      }
+      
+      if (xs.length === 0) {
+        throw new Error("No valid training images processed");
+      }
+      
+      setTrainingLogs(prev => [...prev, `Processed ${xs.length} training images across ${classes.length} classes`]);
+      
+      // Stack all examples into tensors
+      const xTensor = tf.stack(xs);
+      const yTensor = tf.tensor2d(ys);
+      
+      // Train model
+      setTrainingLogs(prev => [...prev, "Beginning model training (this may take a while)..."]);
+      await model.fit(xTensor, yTensor, {
+        epochs: 10,
+        batchSize: 16,
+        validationSplit: 0.2,
+        callbacks: {
+          onEpochEnd: (epoch, logs) => {
+            const progress = Math.round(((epoch + 1) / 10) * 100);
+            setTrainingProgress(progress);
+            setTrainingLogs(prev => [
+              ...prev, 
+              `Epoch ${epoch+1}/10 - loss: ${logs.loss.toFixed(4)} - accuracy: ${logs.acc.toFixed(4)}`
+            ]);
+          }
+        }
+      });
+      
+      // Cleanup tensors
+      xTensor.dispose();
+      yTensor.dispose();
+      
+      // Save model
+      setCustomModel(model);
+      setTrainingLogs(prev => [...prev, "Model training complete! Custom model is now active."]);
+      
+      // Optional - save to browser storage
+      try {
+        await model.save('indexeddb://custom-object-detection-model');
+        setTrainingLogs(prev => [...prev, "Model saved to browser storage"]);
+      } catch (saveErr) {
+        console.error("Error saving model:", saveErr);
+        setTrainingLogs(prev => [...prev, `Couldn't save model to browser storage: ${saveErr.message}`]);
+      }
+      
+    } catch (err) {
+      console.error("Training error:", err);
+      setTrainingLogs(prev => [...prev, `ERROR: ${err.message}`]);
+    } finally {
+      setIsTraining(false);
     }
   };
+
+  // Load previously saved model
+  const loadCustomModel = async () => {
+    try {
+      setTrainingLogs(prev => [...prev, "Loading saved model from browser storage..."]);
+      const model = await tf.loadLayersModel('indexeddb://custom-object-detection-model');
+      setCustomModel(model);
+      setTrainingLogs(prev => [...prev, "Custom model loaded successfully!"]);
+    } catch (err) {
+      console.error("Error loading saved model:", err);
+      setTrainingLogs(prev => [...prev, `Error loading model: ${err.message}`]);
+    }
+  };
+
+  // Clear all training data
+  const clearTrainingData = () => {
+    if (window.confirm("Are you sure you want to clear all training data? This cannot be undone.")) {
+      setTrainingImages({});
+      setTrainingLogs(prev => [...prev, "All training data cleared"]);
+    }
+  };
+
+  // Effect to run detection in detection mode when model or video status changes
+  useEffect(() => {
+    if (mode === 'detect' && model && isVideoPlaying && !modelLoading) {
+      console.log("Starting detection due to model/video ready");
+      detectObjects();
+    } else if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
+    }
+    
+    return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    };
+  }, [mode, model, detectObjects, isVideoPlaying, modelLoading]);
 
   if (error) {
     return <div className="error">{error}</div>;
@@ -269,8 +666,38 @@ function App() {
 
   return (
     <div className="App">
-      <h1>AI Object Detection with Custom Training</h1>
-      <div style={{ position: 'relative' }}>
+      <h1>AI Object Detection & Custom Training</h1>
+      
+      {/* Mode Selector */}
+      <div className="mode-selector">
+        <button 
+          className={mode === 'detect' ? 'active' : ''} 
+          onClick={() => handleModeChange('detect')}
+        >
+          Object Detection
+        </button>
+        <button 
+          className={mode === 'capture' ? 'active' : ''} 
+          onClick={() => handleModeChange('capture')}
+        >
+          Training Capture
+        </button>
+        <button 
+          className={mode === 'train' ? 'active' : ''} 
+          onClick={() => handleModeChange('train')}
+        >
+          Model Training
+        </button>
+      </div>
+      
+      {/* Video and Canvas Display */}
+      <div className="video-container">
+        {modelLoading && (
+          <div className="loading-overlay">
+            <div className="loading-spinner"></div>
+            <p>Loading AI model...</p>
+          </div>
+        )}
         <video
           ref={videoRef}
           style={{ width: '100%', maxWidth: '640px', height: 'auto' }}
@@ -289,71 +716,200 @@ function App() {
             height: 'auto'
           }}
         />
+        <canvas
+          ref={captureCanvasRef}
+          style={{ display: 'none' }}
+        />
       </div>
-      <div>
-        <button onClick={handleModeChange}>
-          {isLiveMode ? "Switch to Detect and Save" : "Switch to Live Mode"}
-        </button>
-        {!isLiveMode && (
-          <button onClick={handleDetectAndSave}>Detect and Save</button>
-        )}
-      </div>
-      {capturedImage && !isLiveMode && (
-        <div>
-          <h3>Captured Image:</h3>
-          <img src={capturedImage} alt="Captured" style={{ maxWidth: '100%', height: 'auto' }} />
-        </div>
-      )}
-      <div>
-        <h2>Detection Stats:</h2>
-        {isLiveMode && <p>FPS: {fps}</p>}
-        <h3>Object Counts:</h3>
-        <ul>
-          {Object.entries(objectCounts).map(([objectClass, count]) => (
-            <li key={objectClass} onClick={() => handleObjectSelect(objectClass)} style={{cursor: 'pointer'}}>
-              {objectClass}: {count}
-            </li>
-          ))}
-        </ul>
-      </div>
-      {selectedObject && (
-        <div>
-          <h3>Details for {selectedObject}:</h3>
-          <ul>
-            {detections
-              .filter(detection => detection.class === selectedObject)
-              .map((detection, index) => (
-                <li key={index}>
-                  Confidence: {Math.round(detection.score * 100)}%,
-                  Position: (x: {Math.round(detection.bbox[0])}, y: {Math.round(detection.bbox[1])}),
-                  Size: {Math.round(detection.bbox[2])}x{Math.round(detection.bbox[3])}
+      
+      {/* DETECTION MODE UI */}
+      {mode === 'detect' && (
+        <div className="detection-panel">
+          <div className="detection-stats">
+            <h2>Detection Stats</h2>
+            <p>FPS: {fps}</p>
+            
+            <button 
+              onClick={() => setShowAdvancedOptions(!showAdvancedOptions)}
+              className="options-button"
+            >
+              {showAdvancedOptions ? 'Hide' : 'Show'} Advanced Options
+            </button>
+            
+            {showAdvancedOptions && (
+              <div className="advanced-options">
+                <label>
+                  Confidence Threshold: {confidenceThreshold}
+                  <input 
+                    type="range" 
+                    min="0.1" 
+                    max="0.9" 
+                    step="0.05" 
+                    value={confidenceThreshold}
+                    onChange={(e) => setConfidenceThreshold(parseFloat(e.target.value))}
+                  />
+                </label>
+              </div>
+            )}
+            
+            <h3>Object Counts:</h3>
+            <ul className="object-list">
+              {Object.entries(objectCounts).map(([objectClass, count]) => (
+                <li 
+                  key={objectClass} 
+                  onClick={() => setSelectedObject(objectClass)} 
+                  className={selectedObject === objectClass ? 'selected' : ''}
+                >
+                  {objectClass}: {count}
                 </li>
               ))}
-          </ul>
+            </ul>
+            
+            {detections.length === 0 && !modelLoading && (
+              <div className="no-detections">
+                <p>No objects detected. Try:</p>
+                <ul>
+                  <li>Showing objects more clearly to the camera</li>
+                  <li>Adjusting the confidence threshold</li>
+                  <li>Ensuring good lighting conditions</li>
+                </ul>
+              </div>
+            )}
+          </div>
+          
+          {selectedObject && (
+            <div className="object-details">
+              <h3>Details for {selectedObject}:</h3>
+              <ul>
+                {detections
+                  .filter(detection => detection.class === selectedObject)
+                  .map((detection, index) => (
+                    <li key={index}>
+                      Confidence: {Math.round(detection.score * 100)}%,
+                      Position: (x: {Math.round(detection.bbox[0])}, y: {Math.round(detection.bbox[1])}),
+                      Size: {Math.round(detection.bbox[2])}x{Math.round(detection.bbox[3])}
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
-      <div>
-        <h2>Custom Training</h2>
-        <input
-          type="text"
-          value={newClassName}
-          onChange={(e) => setNewClassName(e.target.value)}
-          placeholder="Enter new class name"
-        />
-        <button onClick={handleAddClass}>Add Class</button>
-        
-        {customClasses.map(className => (
-          <div key={className}>
-            <h3>{className}</h3>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => handleImageUpload(e, className)}
-            />
-            <p>Training images: {trainingImages[className]?.length || 0}</p>
+      
+      {/* CAPTURE MODE UI */}
+      {mode === 'capture' && (
+        <div className="capture-panel">
+          <h2>Training Data Capture</h2>
+          <p>Capture images for custom object detection training</p>
+          
+          <div className="class-selector">
+            <h3>Select Class to Train:</h3>
+            <div className="class-buttons">
+              {customClasses.map(className => (
+                <button 
+                  key={className}
+                  onClick={() => handleSetTrainingClass(className)}
+                  className={currentTrainingClass === className ? 'active' : ''}
+                >
+                  {className} ({trainingImages[className]?.length || 0})
+                </button>
+              ))}
+            </div>
+            
+            <div className="add-class">
+              <input
+                type="text"
+                value={newClassName}
+                onChange={(e) => setNewClassName(e.target.value)}
+                placeholder="Enter new class name"
+              />
+              <button onClick={handleAddClass}>Add Class</button>
+            </div>
           </div>
-        ))}
-      </div>
+          
+          {currentTrainingClass && (
+            <div className="capture-controls">
+              <h3>Capturing for: {currentTrainingClass}</h3>
+              <p>Current images: {trainingImages[currentTrainingClass]?.length || 0}</p>
+              <button 
+                className="capture-button"
+                onClick={handleCaptureImage}
+              >
+                Capture Image
+              </button>
+              
+              <div className="file-upload">
+                <h4>Or upload images:</h4>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={(e) => handleImageUpload(e, currentTrainingClass)}
+                />
+              </div>
+              
+              {capturedImage && (
+                <div className="last-capture">
+                  <h4>Last Captured:</h4>
+                  <img src={capturedImage} alt="Captured" />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      
+      {/* TRAINING MODE UI */}
+      {mode === 'train' && (
+        <div className="training-panel">
+          <h2>Model Training</h2>
+          
+          <div className="training-status">
+            <h3>Training Data Summary:</h3>
+            <ul>
+              {customClasses.map(className => (
+                <li key={className}>
+                  {className}: {trainingImages[className]?.length || 0} images
+                </li>
+              ))}
+            </ul>
+            
+            {isTraining ? (
+              <div className="training-progress">
+                <h3>Training in Progress: {trainingProgress}%</h3>
+                <progress value={trainingProgress} max="100" />
+              </div>
+            ) : (
+              <div className="training-actions">
+                <button 
+                  onClick={trainCustomModel}
+                  disabled={customClasses.length < 2}
+                  className="train-button"
+                >
+                  Train Custom Model
+                </button>
+                <button onClick={loadCustomModel}>
+                  Load Saved Model
+                </button>
+                <button onClick={clearTrainingData} className="danger-button">
+                  Clear All Training Data
+                </button>
+              </div>
+            )}
+          </div>
+          
+          <div className="training-logs">
+            <h3>Training Logs:</h3>
+            <div className="logs-container">
+              {trainingLogs.map((log, index) => (
+                <div key={index} className="log-entry">
+                  {log}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

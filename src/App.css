@@ -1,38 +1,330 @@
+/* App.css - Styles for the AI detection application */
+
 .App {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+}
+
+h1 {
   text-align: center;
+  margin-bottom: 30px;
+  color: #2c3e50;
 }
 
-.App-logo {
-  height: 40vmin;
-  pointer-events: none;
+.video-container {
+  position: relative;
+  margin: 0 auto 30px;
+  max-width: 640px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .App-logo {
-    animation: App-logo-spin infinite 20s linear;
-  }
-}
-
-.App-header {
-  background-color: #282c34;
-  min-height: 100vh;
+/* Loading overlay for model loading */
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.7);
   display: flex;
   flex-direction: column;
-  align-items: center;
   justify-content: center;
-  font-size: calc(10px + 2vmin);
+  align-items: center;
+  z-index: 10;
   color: white;
 }
 
-.App-link {
-  color: #61dafb;
+.loading-spinner {
+  width: 50px;
+  height: 50px;
+  border: 5px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top-color: #fff;
+  animation: spin 1s ease-in-out infinite;
+  margin-bottom: 15px;
 }
 
-@keyframes App-logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
+@keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+.mode-selector {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 30px;
+  gap: 10px;
+}
+
+.mode-selector button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  background-color: #34495e;
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.mode-selector button:hover {
+  background-color: #2c3e50;
+}
+
+.mode-selector button.active {
+  background-color: #3498db;
+}
+
+/* Detection panel styles */
+.detection-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.detection-stats, .object-details {
+  background-color: #f8f9fa;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.object-list {
+  list-style: none;
+  padding: 0;
+}
+
+.object-list li {
+  padding: 8px 12px;
+  margin-bottom: 5px;
+  background-color: #ecf0f1;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.object-list li:hover {
+  background-color: #e0e6e8;
+}
+
+.object-list li.selected {
+  background-color: #3498db;
+  color: white;
+}
+
+.options-button {
+  margin: 10px 0;
+  padding: 8px 12px;
+  background-color: #f1c40f;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.advanced-options {
+  margin-top: 15px;
+  padding: 15px;
+  background-color: #ecf0f1;
+  border-radius: 4px;
+}
+
+.advanced-options label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.advanced-options input[type="range"] {
+  width: 100%;
+  margin-top: 5px;
+}
+
+/* No detections message */
+.no-detections {
+  margin-top: 20px;
+  padding: 15px;
+  background-color: #f8d7da;
+  border-radius: 4px;
+  color: #721c24;
+}
+
+.no-detections p {
+  font-weight: bold;
+  margin-bottom: 8px;
+}
+
+.no-detections ul {
+  padding-left: 20px;
+}
+
+.no-detections li {
+  margin-bottom: 5px;
+}
+
+/* Capture panel styles */
+.capture-panel {
+  background-color: #f8f9fa;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.class-selector {
+  margin-bottom: 25px;
+}
+
+.class-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 15px;
+}
+
+.class-buttons button {
+  padding: 8px 16px;
+  background-color: #7f8c8d;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.class-buttons button.active {
+  background-color: #16a085;
+}
+
+.add-class {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.add-class input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.add-class button, .capture-button {
+  padding: 8px 16px;
+  background-color: #2980b9;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.capture-button {
+  background-color: #e74c3c;
+  padding: 12px 24px;
+  margin: 15px 0;
+  font-size: 1.1em;
+}
+
+.file-upload {
+  margin: 20px 0;
+}
+
+.last-capture {
+  margin-top: 20px;
+}
+
+.last-capture img {
+  max-width: 100%;
+  border-radius: 4px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+/* Training panel styles */
+.training-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.training-status, .training-logs {
+  background-color: #f8f9fa;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.training-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.training-actions button {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 4px;
+  color: white;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.train-button {
+  background-color: #2ecc71;
+}
+
+.train-button:disabled {
+  background-color: #95a5a6;
+  cursor: not-allowed;
+}
+
+.danger-button {
+  background-color: #e74c3c;
+}
+
+.logs-container {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 10px;
+  background-color: #2c3e50;
+  color: #ecf0f1;
+  border-radius: 4px;
+  font-family: monospace;
+}
+
+.log-entry {
+  margin-bottom: 6px;
+  line-height: 1.5;
+  border-bottom: 1px solid #34495e;
+  padding-bottom: 6px;
+}
+
+progress {
+  width: 100%;
+  height: 20px;
+  margin-top: 10px;
+}
+
+.error {
+  padding: 30px;
+  background-color: #fadbd8;
+  color: #c0392b;
+  text-align: center;
+  border-radius: 8px;
+  margin-top: 50px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .detection-panel, .training-panel {
+    grid-template-columns: 1fr;
+  }
+  
+  .mode-selector {
+    flex-direction: column;
   }
 }
